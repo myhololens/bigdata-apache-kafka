@@ -36,7 +36,7 @@ class SaslApiVersionsRequestTest extends BaseRequestTest with SaslSetup {
   private val kafkaServerSaslMechanisms = List("PLAIN")
   protected override val serverSaslProperties = Some(kafkaServerSaslProperties(kafkaServerSaslMechanisms, kafkaClientSaslMechanism))
   protected override val clientSaslProperties = Some(kafkaClientSaslProperties(kafkaClientSaslMechanism))
-  override def numBrokers = 1
+  override def brokerCount = 1
 
   @Before
   override def setUp(): Unit = {
@@ -51,7 +51,7 @@ class SaslApiVersionsRequestTest extends BaseRequestTest with SaslSetup {
   }
 
   @Test
-  def testApiVersionsRequestBeforeSaslHandshakeRequest() {
+  def testApiVersionsRequestBeforeSaslHandshakeRequest(): Unit = {
     val plaintextSocket = connect(protocol = securityProtocol)
     try {
       val apiVersionsResponse = sendApiVersionsRequest(plaintextSocket, new ApiVersionsRequest.Builder().build(0))
@@ -63,24 +63,24 @@ class SaslApiVersionsRequestTest extends BaseRequestTest with SaslSetup {
   }
 
   @Test
-  def testApiVersionsRequestAfterSaslHandshakeRequest() {
+  def testApiVersionsRequestAfterSaslHandshakeRequest(): Unit = {
     val plaintextSocket = connect(protocol = securityProtocol)
     try {
       sendSaslHandshakeRequestValidateResponse(plaintextSocket)
       val response = sendApiVersionsRequest(plaintextSocket, new ApiVersionsRequest.Builder().build(0))
-      assertEquals(Errors.ILLEGAL_SASL_STATE, response.error)
+      assertEquals(Errors.ILLEGAL_SASL_STATE.code(), response.data.errorCode())
     } finally {
       plaintextSocket.close()
     }
   }
 
   @Test
-  def testApiVersionsRequestWithUnsupportedVersion() {
+  def testApiVersionsRequestWithUnsupportedVersion(): Unit = {
     val plaintextSocket = connect(protocol = securityProtocol)
     try {
-      val apiVersionsRequest = new ApiVersionsRequest(0)
+      val apiVersionsRequest = new ApiVersionsRequest.Builder().build(0)
       val apiVersionsResponse = sendApiVersionsRequest(plaintextSocket, apiVersionsRequest, Some(Short.MaxValue))
-      assertEquals(Errors.UNSUPPORTED_VERSION, apiVersionsResponse.error)
+      assertEquals(Errors.UNSUPPORTED_VERSION.code(), apiVersionsResponse.data.errorCode())
       val apiVersionsResponse2 = sendApiVersionsRequest(plaintextSocket, new ApiVersionsRequest.Builder().build(0))
       ApiVersionsRequestTest.validateApiVersionsResponse(apiVersionsResponse2)
       sendSaslHandshakeRequestValidateResponse(plaintextSocket)
@@ -95,7 +95,7 @@ class SaslApiVersionsRequestTest extends BaseRequestTest with SaslSetup {
     ApiVersionsResponse.parse(response, request.version)
   }
 
-  private def sendSaslHandshakeRequestValidateResponse(socket: Socket) {
+  private def sendSaslHandshakeRequestValidateResponse(socket: Socket): Unit = {
     val request = new SaslHandshakeRequest(new SaslHandshakeRequestData().setMechanism("PLAIN"))
     val response = sendAndReceive(request, ApiKeys.SASL_HANDSHAKE, socket)
     val handshakeResponse = SaslHandshakeResponse.parse(response, request.version)

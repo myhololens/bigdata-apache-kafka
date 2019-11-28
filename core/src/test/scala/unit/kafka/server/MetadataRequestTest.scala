@@ -22,19 +22,23 @@ import java.util.Properties
 import kafka.network.SocketServer
 import kafka.utils.TestUtils
 import org.apache.kafka.common.Node
+import org.apache.kafka.common.errors.UnsupportedVersionException
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.message.MetadataRequestData
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests.{MetadataRequest, MetadataResponse}
+import org.apache.kafka.test.TestUtils.isValidClusterId
 import org.junit.Assert._
 import org.junit.{Before, Test}
-import org.apache.kafka.test.TestUtils.isValidClusterId
+import org.scalatest.Assertions.intercept
 
 import scala.collection.JavaConverters._
+import scala.collection.Seq
 
 class MetadataRequestTest extends BaseRequestTest {
 
-  override def propertyOverrides(properties: Properties) {
+  override def brokerPropertyOverrides(properties: Properties): Unit = {
+    properties.setProperty(KafkaConfig.OffsetsTopicPartitionsProp, "1")
     properties.setProperty(KafkaConfig.DefaultReplicationFactorProp, "2")
     properties.setProperty(KafkaConfig.RackProp, s"rack/${properties.getProperty(KafkaConfig.BrokerIdProp)}")
   }
@@ -45,20 +49,20 @@ class MetadataRequestTest extends BaseRequestTest {
   }
 
   @Test
-  def testClusterIdWithRequestVersion1() {
+  def testClusterIdWithRequestVersion1(): Unit = {
     val v1MetadataResponse = sendMetadataRequest(MetadataRequest.Builder.allTopics.build(1.toShort))
     val v1ClusterId = v1MetadataResponse.clusterId
     assertNull(s"v1 clusterId should be null", v1ClusterId)
   }
 
   @Test
-  def testClusterIdIsValid() {
+  def testClusterIdIsValid(): Unit = {
     val metadataResponse = sendMetadataRequest(MetadataRequest.Builder.allTopics.build(2.toShort))
     isValidClusterId(metadataResponse.clusterId)
   }
 
   @Test
-  def testControllerId() {
+  def testControllerId(): Unit = {
     val controllerServer = servers.find(_.kafkaController.isActive).get
     val controllerId = controllerServer.config.brokerId
     val metadataResponse = sendMetadataRequest(MetadataRequest.Builder.allTopics.build(1.toShort))
@@ -80,7 +84,7 @@ class MetadataRequestTest extends BaseRequestTest {
   }
 
   @Test
-  def testRack() {
+  def testRack(): Unit = {
     val metadataResponse = sendMetadataRequest(MetadataRequest.Builder.allTopics.build(1.toShort))
     // Validate rack matches what's set in generateConfigs() above
     metadataResponse.brokers.asScala.foreach { broker =>
@@ -89,7 +93,7 @@ class MetadataRequestTest extends BaseRequestTest {
   }
 
   @Test
-  def testIsInternal() {
+  def testIsInternal(): Unit = {
     val internalTopic = Topic.GROUP_METADATA_TOPIC_NAME
     val notInternalTopic = "notInternal"
     // create the topics
@@ -110,7 +114,7 @@ class MetadataRequestTest extends BaseRequestTest {
   }
 
   @Test
-  def testNoTopicsRequest() {
+  def testNoTopicsRequest(): Unit = {
     // create some topics
     createTopic("t1", 3, 2)
     createTopic("t2", 3, 2)
@@ -124,8 +128,7 @@ class MetadataRequestTest extends BaseRequestTest {
 
   @Test
   def testAutoTopicCreation(): Unit = {
-    def checkAutoCreatedTopic(existingTopic: String, autoCreatedTopic: String, response: MetadataResponse): Unit = {
-      assertNull(response.errors.get(existingTopic))
+    def checkAutoCreatedTopic(autoCreatedTopic: String, response: MetadataResponse): Unit = {
       assertEquals(Errors.LEADER_NOT_AVAILABLE, response.errors.get(autoCreatedTopic))
       assertEquals(Some(servers.head.config.numPartitions), zkClient.getTopicPartitionCount(autoCreatedTopic))
       for (i <- 0 until servers.head.config.numPartitions)
@@ -136,20 +139,28 @@ class MetadataRequestTest extends BaseRequestTest {
     val topic2 = "t2"
     val topic3 = "t3"
     val topic4 = "t4"
-    createTopic(topic1, 1, 1)
+    val topic5 = "t5"
+    createTopic(topic1, numPartitions = 1, replicationFactor = 1)
 
-    val response1 = sendMetadataRequest(new MetadataRequest.Builder(Seq(topic1, topic2).asJava, true, ApiKeys.METADATA.latestVersion).build())
-    checkAutoCreatedTopic(topic1, topic2, response1)
+    val response1 = sendMetadataRequest(new MetadataRequest.Builder(Seq(topic1, topic2).asJava, true).build())
+    assertNull(response1.errors.get(topic1))
+    checkAutoCreatedTopic(topic2, response1)
 
-    // V3 doesn't support a configurable allowAutoTopicCreation, so the fact that we set it to `false` has no effect
-    val response2 = sendMetadataRequest(new MetadataRequest(requestData(List(topic2, topic3), false), 3.toShort))
-    checkAutoCreatedTopic(topic2, topic3, response2)
+    // The default behavior in old versions of the metadata API is to allow topic creation, so
+    // protocol downgrades should happen gracefully when auto-creation is explicitly requested.
+    val response2 = sendMetadataRequest(new MetadataRequest.Builder(Seq(topic3).asJava, true).build(1))
+    checkAutoCreatedTopic(topic3, response2)
+
+    // V3 doesn't support a configurable allowAutoTopicCreation, so disabling auto-creation is not supported
+    intercept[UnsupportedVersionException] {
+      sendMetadataRequest(new MetadataRequest(requestData(List(topic4), false), 3.toShort))
+    }
 
     // V4 and higher support a configurable allowAutoTopicCreation
-    val response3 = sendMetadataRequest(new MetadataRequest.Builder(Seq(topic3, topic4).asJava, false, 4.toShort).build)
-    assertNull(response3.errors.get(topic3))
+    val response3 = sendMetadataRequest(new MetadataRequest.Builder(Seq(topic4, topic5).asJava, false, 4.toShort).build)
     assertEquals(Errors.UNKNOWN_TOPIC_OR_PARTITION, response3.errors.get(topic4))
-    assertEquals(None, zkClient.getTopicPartitionCount(topic4))
+    assertEquals(Errors.UNKNOWN_TOPIC_OR_PARTITION, response3.errors.get(topic5))
+    assertEquals(None, zkClient.getTopicPartitionCount(topic5))
   }
 
   @Test
@@ -196,7 +207,7 @@ class MetadataRequestTest extends BaseRequestTest {
   }
 
   @Test
-  def testAllTopicsRequest() {
+  def testAllTopicsRequest(): Unit = {
     // create some topics
     createTopic("t1", 3, 2)
     createTopic("t2", 3, 2)
@@ -249,7 +260,7 @@ class MetadataRequestTest extends BaseRequestTest {
   }
 
   @Test
-  def testReplicaDownResponse() {
+  def testReplicaDownResponse(): Unit = {
     val replicaDownTopic = "replicaDown"
     val replicaCount = 3
 

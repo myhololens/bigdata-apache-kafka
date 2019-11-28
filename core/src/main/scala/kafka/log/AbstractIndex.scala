@@ -27,9 +27,7 @@ import kafka.common.IndexOffsetOverflowException
 import kafka.log.IndexSearchType.IndexSearchEntity
 import kafka.utils.CoreUtils.inLock
 import kafka.utils.{CoreUtils, Logging}
-import org.apache.kafka.common.utils.{MappedByteBuffers, OperatingSystem, Utils}
-
-import scala.math.ceil
+import org.apache.kafka.common.utils.{ByteBufferUnmapper, OperatingSystem, Utils}
 
 /**
  * The abstract index class which holds entry format agnostic methods.
@@ -175,6 +173,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
       val roundedNewSize = roundDownToExactMultiple(newSize, entrySize)
 
       if (_length == roundedNewSize) {
+        debug(s"Index ${file.getAbsolutePath} was not resized because it already has size $roundedNewSize")
         false
       } else {
         val raf = new RandomAccessFile(file, "rw")
@@ -189,6 +188,8 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
           mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
           _maxEntries = mmap.limit() / entrySize
           mmap.position(position)
+          debug(s"Resized ${file.getAbsolutePath} to $roundedNewSize, position is ${mmap.position()} " +
+            s"and limit is ${mmap.limit()}")
           true
         } finally {
           CoreUtils.swallow(raf.close(), AbstractIndex)
@@ -202,7 +203,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    *
    * @throws IOException if rename fails
    */
-  def renameTo(f: File) {
+  def renameTo(f: File): Unit = {
     try Utils.atomicMoveWithFallback(file.toPath, f.toPath)
     finally file = f
   }
@@ -210,7 +211,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
   /**
    * Flush the data in the index to disk
    */
-  def flush() {
+  def flush(): Unit = {
     inLock(lock) {
       mmap.force()
     }
@@ -232,7 +233,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * Trim this segment to fit just the valid entries, deleting all trailing unwritten bytes from
    * the file.
    */
-  def trimToValidSize() {
+  def trimToValidSize(): Unit = {
     inLock(lock) {
       resize(entrySize * _entries)
     }
@@ -244,7 +245,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
   def sizeInBytes = entrySize * _entries
 
   /** Close the index */
-  def close() {
+  def close(): Unit = {
     trimToValidSize()
     closeHandler()
   }
@@ -315,8 +316,8 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
   /**
    * Forcefully free the buffer's mmap.
    */
-  protected[log] def forceUnmap() {
-    try MappedByteBuffers.unmap(file.getAbsolutePath, mmap)
+  protected[log] def forceUnmap(): Unit = {
+    try ByteBufferUnmapper.unmap(file.getAbsolutePath, mmap)
     finally mmap = null // Accessing unmapped mmap crashes JVM by SEGV so we null it out to be safe
   }
 
@@ -374,7 +375,7 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
       var lo = begin
       var hi = end
       while(lo < hi) {
-        val mid = ceil(hi/2.0 + lo/2.0).toInt
+        val mid = (lo + hi + 1) >>> 1
         val found = parseEntry(idx, mid)
         val compareResult = compareIndexEntry(found, target, searchEntity)
         if(compareResult > 0)
@@ -402,8 +403,8 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
 
   private def compareIndexEntry(indexEntry: IndexEntry, target: Long, searchEntity: IndexSearchEntity): Int = {
     searchEntity match {
-      case IndexSearchType.KEY => indexEntry.indexKey.compareTo(target)
-      case IndexSearchType.VALUE => indexEntry.indexValue.compareTo(target)
+      case IndexSearchType.KEY => java.lang.Long.compare(indexEntry.indexKey, target)
+      case IndexSearchType.VALUE => java.lang.Long.compare(indexEntry.indexValue, target)
     }
   }
 

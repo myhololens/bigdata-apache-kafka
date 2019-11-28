@@ -32,6 +32,7 @@ import org.apache.kafka.streams.errors.LockException;
 import org.apache.kafka.streams.errors.ProcessorStateException;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.processor.StateRestoreCallback;
+import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.state.TimestampedBytesStore;
 import org.apache.kafka.streams.state.internals.OffsetCheckpoint;
 import org.apache.kafka.streams.state.internals.WrappedStateStore;
@@ -65,6 +66,7 @@ import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -91,6 +93,17 @@ public class GlobalStateManagerImplTest {
     private ProcessorTopology topology;
     private InternalMockProcessorContext processorContext;
 
+    static ProcessorTopology withGlobalStores(final List<StateStore> stateStores,
+                                              final Map<String, String> storeToChangelogTopic) {
+        return new ProcessorTopology(Collections.emptyList(),
+                                     Collections.emptyMap(),
+                                     Collections.emptyMap(),
+                                     Collections.emptyList(),
+                                     stateStores,
+                                     storeToChangelogTopic,
+                                     Collections.emptySet());
+    }
+
     @Before
     public void before() {
         final Map<String, String> storeToTopic = new HashMap<>();
@@ -105,7 +118,7 @@ public class GlobalStateManagerImplTest {
         store3 = new NoOpReadOnlyStore<>(storeName3);
         store4 = new NoOpReadOnlyStore<>(storeName4);
 
-        topology = ProcessorTopology.withGlobalStores(asList(store1, store2, store3, store4), storeToTopic);
+        topology = withGlobalStores(asList(store1, store2, store3, store4), storeToTopic);
 
         streamsConfig = new StreamsConfig(new Properties() {
             {
@@ -125,7 +138,7 @@ public class GlobalStateManagerImplTest {
             streamsConfig);
         processorContext = new InternalMockProcessorContext(stateDirectory.globalStateDir(), streamsConfig);
         stateManager.setGlobalProcessorContext(processorContext);
-        checkpointFile = new File(stateManager.baseDir(), ProcessorStateManager.CHECKPOINT_FILE_NAME);
+        checkpointFile = new File(stateManager.baseDir(), StateManagerUtil.CHECKPOINT_FILE_NAME);
     }
 
     @After
@@ -157,6 +170,29 @@ public class GlobalStateManagerImplTest {
         stateManager.initialize();
         final Map<TopicPartition, Long> offsets = stateManager.checkpointed();
         assertEquals(expected, offsets);
+    }
+
+    @Test
+    public void shouldThrowStreamsExceptionForOldTopicPartitions() throws IOException {
+        final HashMap<TopicPartition, Long> expectedOffsets = new HashMap<>();
+        expectedOffsets.put(t1, 1L);
+        expectedOffsets.put(t2, 1L);
+        expectedOffsets.put(t3, 1L);
+        expectedOffsets.put(t4, 1L);
+
+        // add an old topic (a topic not associated with any global state store)
+        final HashMap<TopicPartition, Long> startOffsets = new HashMap<>(expectedOffsets);
+        final TopicPartition tOld = new TopicPartition("oldTopic", 1);
+        startOffsets.put(tOld, 1L);
+
+        // start with a checkpoint file will all topic-partitions: expected and old (not
+        // associated with any global state store).
+        final OffsetCheckpoint checkpoint = new OffsetCheckpoint(checkpointFile);
+        checkpoint.write(startOffsets);
+
+        // initialize will throw exception
+        final StreamsException e = assertThrows(StreamsException.class, () -> stateManager.initialize());
+        assertThat(e.getMessage(), equalTo("Encountered a topic-partition not associated with any global state store"));
     }
 
     @Test
@@ -290,7 +326,7 @@ public class GlobalStateManagerImplTest {
     @Test
     public void shouldRecoverFromInvalidOffsetExceptionAndRestoreRecords() {
         initializeConsumer(2, 0, t1);
-        consumer.setException(new InvalidOffsetException("Try Again!") {
+        consumer.setPollException(new InvalidOffsetException("Try Again!") {
             public Set<TopicPartition> partitions() {
                 return Collections.singleton(t1);
             }
@@ -324,7 +360,7 @@ public class GlobalStateManagerImplTest {
         initializeConsumer(5, 5, t1);
 
         final OffsetCheckpoint offsetCheckpoint = new OffsetCheckpoint(new File(stateManager.baseDir(),
-                                                                                ProcessorStateManager.CHECKPOINT_FILE_NAME));
+                                                                                StateManagerUtil.CHECKPOINT_FILE_NAME));
         offsetCheckpoint.write(Collections.singletonMap(t1, 5L));
 
         stateManager.initialize();
@@ -548,7 +584,7 @@ public class GlobalStateManagerImplTest {
 
     private Map<TopicPartition, Long> readOffsetsCheckpoint() throws IOException {
         final OffsetCheckpoint offsetCheckpoint = new OffsetCheckpoint(new File(stateManager.baseDir(),
-                                                                                ProcessorStateManager.CHECKPOINT_FILE_NAME));
+                                                                                StateManagerUtil.CHECKPOINT_FILE_NAME));
         return offsetCheckpoint.read();
     }
 
@@ -705,7 +741,7 @@ public class GlobalStateManagerImplTest {
     }
 
     private void writeCorruptCheckpoint() throws IOException {
-        final File checkpointFile = new File(stateManager.baseDir(), ProcessorStateManager.CHECKPOINT_FILE_NAME);
+        final File checkpointFile = new File(stateManager.baseDir(), StateManagerUtil.CHECKPOINT_FILE_NAME);
         try (final OutputStream stream = Files.newOutputStream(checkpointFile.toPath())) {
             stream.write("0\n1\nfoo".getBytes());
         }

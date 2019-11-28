@@ -25,7 +25,7 @@ import java.util.concurrent._
 
 import kafka.server.{BaseRequestTest, KafkaConfig}
 import kafka.utils.{CoreUtils, TestUtils}
-import org.apache.kafka.clients.admin.{AdminClient, AdminClientConfig}
+import org.apache.kafka.clients.admin.{Admin, AdminClient, AdminClientConfig}
 import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
@@ -34,12 +34,13 @@ import org.apache.kafka.common.requests.{ProduceRequest, ProduceResponse}
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.junit.Assert._
 import org.junit.{After, Before, Test}
+import org.scalatest.Assertions.intercept
 
 import scala.collection.JavaConverters._
 
 class DynamicConnectionQuotaTest extends BaseRequestTest {
 
-  override def numBrokers = 1
+  override def brokerCount = 1
 
   val topic = "test"
   val listener = ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT)
@@ -49,7 +50,7 @@ class DynamicConnectionQuotaTest extends BaseRequestTest {
   @Before
   override def setUp(): Unit = {
     super.setUp()
-    TestUtils.createTopic(zkClient, topic, numBrokers, numBrokers, servers)
+    TestUtils.createTopic(zkClient, topic, brokerCount, brokerCount, servers)
   }
 
   @After
@@ -64,16 +65,11 @@ class DynamicConnectionQuotaTest extends BaseRequestTest {
     }
   }
 
-  override protected def propertyOverrides(properties: Properties): Unit = {
-    super.propertyOverrides(properties)
-  }
-
   @Test
   def testDynamicConnectionQuota(): Unit = {
-    val initialConnectionCount = connectionCount
     val maxConnectionsPerIP = 5
 
-    def connectAndVerify: Unit = {
+    def connectAndVerify(): Unit = {
       val socket = connect()
       try {
         sendAndReceive(produceRequest, ApiKeys.PRODUCE, socket)
@@ -98,7 +94,6 @@ class DynamicConnectionQuotaTest extends BaseRequestTest {
 
   @Test
   def testDynamicListenerConnectionQuota(): Unit = {
-    val socketServer = servers.head.socketServer
     val initialConnectionCount = connectionCount
 
     def connectAndVerify(): Unit = {
@@ -186,7 +181,7 @@ class DynamicConnectionQuotaTest extends BaseRequestTest {
     }
   }
 
-  private def createAdminClient(): AdminClient = {
+  private def createAdminClient(): Admin = {
     val bootstrapServers = TestUtils.bootstrapServers(servers, new ListenerName(securityProtocol.name))
     val config = new Properties()
     config.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)

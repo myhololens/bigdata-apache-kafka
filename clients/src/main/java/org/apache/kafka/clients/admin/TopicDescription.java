@@ -21,6 +21,7 @@ import org.apache.kafka.common.TopicPartitionInfo;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.utils.Utils;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -32,7 +33,7 @@ public class TopicDescription {
     private final String name;
     private final boolean internal;
     private final List<TopicPartitionInfo> partitions;
-    private Set<AclOperation> authorizedOperations;
+    private final Set<AclOperation> authorizedOperations;
 
     @Override
     public boolean equals(final Object o) {
@@ -57,7 +58,19 @@ public class TopicDescription {
      * @param internal Whether the topic is internal to Kafka
      * @param partitions A list of partitions where the index represents the partition id and the element contains
      *                   leadership and replica information for that partition.
-     * @param authorizedOperations authorized operations for this topic
+     */
+    public TopicDescription(String name, boolean internal, List<TopicPartitionInfo> partitions) {
+        this(name, internal, partitions, Collections.emptySet());
+    }
+
+    /**
+     * Create an instance with the specified parameters.
+     *
+     * @param name The topic name
+     * @param internal Whether the topic is internal to Kafka
+     * @param partitions A list of partitions where the index represents the partition id and the element contains
+     *                   leadership and replica information for that partition.
+     * @param authorizedOperations authorized operations for this topic, or null if this is not known.
      */
     public TopicDescription(String name, boolean internal, List<TopicPartitionInfo> partitions,
                             Set<AclOperation> authorizedOperations) {
@@ -91,7 +104,7 @@ public class TopicDescription {
     }
 
     /**
-     * authorized operations for this topic
+     * authorized operations for this topic, or null if this is not known.
      */
     public Set<AclOperation>  authorizedOperations() {
         return authorizedOperations;
